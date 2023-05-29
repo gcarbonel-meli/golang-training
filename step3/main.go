@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -69,23 +70,37 @@ func myApiHandler(context *gin.Context) {
 	if cryptoCurrencyQueried != "" {
 		cryptoCurrencies = strings.Split(cryptoCurrencyQueried, ",")
 	}
-	// var httpStatus int
+	ch := make(chan ApiResponse)
+	var wg sync.WaitGroup
+	wg.Add(len(cryptoCurrencies))
+	for _, cryptoCurrency := range cryptoCurrencies {
+		go func(cryptoCurrency string) {
+			defer wg.Done()
+			partial := false
+			apiResponseContent, err := cryptoPrice(cryptoCurrency, fiatCurrency)
+			if err != nil {
+				partial = true
+			}
+			apiResponse := ApiResponse{}
+			apiResponse.ID = cryptoCurrency
+			if !partial {
+				apiResponse.Content = apiResponseContent
+			}
+			apiResponse.Partial = partial
+			ch <- apiResponse
+		}(cryptoCurrency)
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
 	httpStatus := http.StatusOK
 	apiResponseList := []ApiResponse{}
-	for _, cryptoCurrency := range cryptoCurrencies {
-		partial := false
-		apiResponseContent, err := cryptoPrice(cryptoCurrency, fiatCurrency)
-		if err != nil {
+	for cryptoData := range ch {
+		if cryptoData.Partial {
 			httpStatus = http.StatusPartialContent
-			partial = true
 		}
-		apiResponse := ApiResponse{}
-		apiResponse.ID = cryptoCurrency
-		if !partial {
-			apiResponse.Content = apiResponseContent
-		}
-		apiResponse.Partial = partial
-		apiResponseList = append(apiResponseList, apiResponse)
+		apiResponseList = append(apiResponseList, cryptoData)
 	}
 	context.JSON(httpStatus, apiResponseList)
 }
